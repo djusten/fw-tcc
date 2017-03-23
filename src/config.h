@@ -9,9 +9,11 @@ class config_t
     config_t() {};
     int confirmation;
     char broker[DEVICE_CONF_ARRAY_LENGHT];
-    char topicHumidity[DEVICE_CONF_ARRAY_LENGHT]
+    char topicHumidity[DEVICE_CONF_ARRAY_LENGHT];
     char wifiSsid[DEVICE_CONF_ARRAY_LENGHT];
     char wifiPass[DEVICE_CONF_ARRAY_LENGHT];
+    char mqttUser[DEVICE_CONF_ARRAY_LENGHT];
+    char mqttPassword[DEVICE_CONF_ARRAY_LENGHT];
 };
 
 #endif
