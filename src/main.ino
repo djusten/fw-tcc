@@ -16,6 +16,7 @@
  */
 
 /********************************Includes********************************/
+
 #include "config.h"
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
@@ -127,9 +128,7 @@ void loop()
   server.handleClient();
 }
 
-
-
-/********************************Main********************************/
+/********************************Init********************************/
 
 void initPins() {
   pinMode(LED_BUILTIN, OUTPUT);
@@ -147,7 +146,6 @@ void initEeprom() {
   delay(10);
 }
 
-/* Configuração dos pinos */
 void initPins() {
   pinMode(rele01, OUTPUT);
   digitalWrite(rele01, HIGH);
@@ -183,6 +181,8 @@ bool initWifi(void)
   Serial.println("\nConnect timed out, opening AP");
   return false;
 }
+
+/********************************Config********************************/
 
 bool saveConfig(int confirmation, char *broker, char *topicHumidity,
                 char *wifiSsid, char *wifiPass, char *mqttUser, char *mqttPassword)
@@ -221,6 +221,17 @@ bool loadConfig(void)
   return true;
 }
 
+void clearEEPROM()
+{
+  for (int i = 0; i < EEPROM_MAX_ADDRS; i++) {
+    EEPROM.write(i, 0);
+  }
+  EEPROM.commit();
+  delay(100);
+}
+
+/********************************Misc********************************/
+
 String macToStr(const uint8_t *mac)
 {
   String result;
@@ -232,6 +243,8 @@ String macToStr(const uint8_t *mac)
   }
   return result;
 }
+
+/********************************Mqtt********************************/
 
 bool init_mqtt()
 {
@@ -249,6 +262,8 @@ bool init_mqtt()
   Serial.println("NOT connected to MQTT broker!");
   return false;
 }
+
+/********************************Web********************************/
 
 void setupAccessPoint(void)
 {
@@ -424,13 +439,4 @@ void handleNotFound()
     content += " " + server.argName(i) + ": " + server.arg(i) + "\n";
   }
   server.send(404, "text/plain", content);
-}
-
-void clearEEPROM()
-{
-  for (int i = 0; i < EEPROM_MAX_ADDRS; i++) {
-    EEPROM.write(i, 0);
-  }
-  EEPROM.commit();
-  delay(100);
 }
