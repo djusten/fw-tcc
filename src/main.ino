@@ -23,6 +23,7 @@
 #include <MQTT.h>
 #include "EEPROMAnything.h"
 
+
 #define EEPROM_MAX_ADDRS 512
 #define CONFIRMATION_NUMBER 42
 
@@ -53,6 +54,9 @@ IPAddress apIP(10, 10, 10, 1);
 DNSServer dnsServer;
 const byte DNS_PORT = 53;
 const char* ssid = "esp-config-mode";
+const int sleepTimeS = 5;
+//int buttonPin = 14;
+int sensorPin = A0;
 
 bool testWifi(void) {
   int c = 0;
@@ -128,9 +132,15 @@ void setup_wifi() {
 void setup()
 {
   Serial.begin(115200);
-
   EEPROM.begin(EEPROM_MAX_ADDRS);
-
+  pinMode(LED_BUILTIN, OUTPUT);
+//  pinMode(buttonPin, INPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
+//  if(digitalRead(buttonPin) == HIGH) {
+//    Serial.println("Button pressed!!");
+//    Serial.println("clearing EEPROM...");
+//    clearEEPROM();
+//  }
   state = PROG_INIT;
 }
 
@@ -157,6 +167,7 @@ bool config_mqtt()
     humidTopic = String(config.topicHumidity);
     return true;
   }
+  Serial.println("NOT connected to MQTT broker!");
   return false;
 }
 
@@ -271,11 +282,6 @@ void handleSetAccessPoint() {
   server.arg("user").toCharArray(config.mqttUser, DEVICE_CONF_ARRAY_LENGHT);
   server.arg("mqttpass").toCharArray(config.mqttPassword, DEVICE_CONF_ARRAY_LENGHT);
 
-  
-//  saveConfig(int confirmation, char *broker, char *topicHumidity,
-//                char *wifiSsid, char *wifiPass, char *mqttUser, char *mqttPassword)
-
-  Serial.print("vai salvar: ");
   Serial.println(config.confirmation);
   Serial.println(config.wifiSsid);
   Serial.println(config.wifiPass);
@@ -296,6 +302,7 @@ void handleSetAccessPoint() {
         EEPROMWriteAnything(0, config);
         EEPROM.commit();
         Serial.println("Done! See you soon2");
+        digitalWrite(LED_BUILTIN, HIGH);
         delay(3000);
         server.stop();
         state = PROG_INIT;
@@ -356,10 +363,10 @@ void loop()
     setup_wifi();
 
     if (testWifi()) {
-      Serial.println("Could connect");
+      Serial.println("Could connect WiFi");
       state = PROG_MQTT;
     } else {
-      Serial.println("Could NOT connect");
+      Serial.println("Could NOT connect Wifi");
       state = PROG_CONFIG;
     }
   }
@@ -375,19 +382,21 @@ void loop()
     Serial.println("Start web");
 
     setupAccessPoint();
+    digitalWrite(LED_BUILTIN, LOW);
     state = PROG_WAIT_WEB;
     delay(5000);
   }
   else if (state == PROG_RUN) {
-    String temperature = String(5, 1);
-    Serial.println("Onion bugs =) | running");
+    float h = analogRead(sensorPin);
+    String humidity = String(h, 1);
     clientMQTT.loop();
-    temperature = "test_publisher";
-    MQTT::Publish pub(humidTopic, temperature);
+    humidity += "\045";
+    MQTT::Publish pub(humidTopic, humidity);
     pub.set_retain(true);
     clientMQTT.publish(pub);
-    delay(5000);
-    //ESP.deepSleep(sleepTimeS * 1000000);
+    Serial.println("Publish: ");
+    Serial.println(humidity);
+    ESP.deepSleep(sleepTimeS * 1000000);
   }
   server.handleClient();
 }
