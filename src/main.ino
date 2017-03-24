@@ -15,6 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+/********************************Includes********************************/
 #include "config.h"
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
@@ -23,6 +24,7 @@
 #include <MQTT.h>
 #include "EEPROMAnything.h"
 
+/********************************Defines********************************/
 
 #define EEPROM_MAX_ADDRS 512
 #define CONFIRMATION_NUMBER 42
@@ -53,17 +55,119 @@ String content;
 IPAddress apIP(10, 10, 10, 1);
 DNSServer dnsServer;
 const byte DNS_PORT = 53;
-const char* ssid = "esp-config-mode";
+const char *ssid = "esp-config-mode";
 const int sleepTimeS = 5;
 //int buttonPin = 14;
 int sensorPin = A0;
 
-bool testWifi(void) {
+/********************************Main********************************/
+
+void setup()
+{
+  initSerial();
+  initEeprom();
+  initPins();
+
+  state = PROG_CHECK;
+}
+
+void loop()
+{
+  dnsServer.processNextRequest();
+  if (state == PROG_CHECK) {
+
+    if(digitalRead(buttonPin) == HIGH) {
+      Serial.println("Button pressed!!");
+      Serial.println("clearing EEPROM...");
+      clearEEPROM();
+    }
+    state = PROG_INIT;
+  }
+  else if(state == PROG_INIT) {
+    Serial.print("INIT");
+
+    loadConfig();
+
+    if (initWifi()) {
+      Serial.println("Could connect WiFi");
+      state = PROG_MQTT;
+    }
+    else {
+      Serial.println("Could NOT connect Wifi");
+      state = PROG_CONFIG;
+    }
+  }
+  else if (state == PROG_MQTT) {
+    if (init_mqtt()) {
+      state = PROG_RUN;
+    }
+    else {
+      state = PROG_CONFIG;
+    }
+  }
+  else if (state == PROG_CONFIG) {
+    Serial.println("Start web");
+
+    setupAccessPoint();
+    digitalWrite(LED_BUILTIN, LOW);
+    state = PROG_WAIT_WEB;
+  }
+  else if (state == PROG_RUN) {
+    float h = analogRead(sensorPin);
+    String humidity = String(h, 1);
+    clientMQTT.loop();
+    humidity += "\045";
+    MQTT::Publish pub(humidTopic, humidity);
+    pub.set_retain(true);
+    clientMQTT.publish(pub);
+    Serial.println("Publish: ");
+    Serial.println(humidity);
+    ESP.deepSleep(sleepTimeS * 1000000);
+  }
+  server.handleClient();
+}
+
+
+
+/********************************Main********************************/
+
+void initPins() {
+  pinMode(LED_BUILTIN, OUTPUT);
+//  pinMode(buttonPin, INPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
+}
+
+void initSerial() {
+  Serial.begin(115200);
+  delay(10);
+}
+
+void initEeprom() {
+  EEPROM.begin(EEPROM_MAX_ADDRS);
+  delay(10);
+}
+
+/* Configuração dos pinos */
+void initPins() {
+  pinMode(rele01, OUTPUT);
+  digitalWrite(rele01, HIGH);
+}
+
+bool initWifi(void)
+{
   int c = 0;
+
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(config.wifiSsid);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.persistent(false);
+  WiFi.begin(config.wifiSsid, config.wifiPass);
 
   Serial.println("\nTesting WiFi...");
 
-  while ( c < 20 ) {
+  while (c < 20) {
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println("");
       Serial.println("WiFi connected");
@@ -117,44 +221,19 @@ bool loadConfig(void)
   return true;
 }
 
-void setup_wifi() {
-
-  delay(10);
-  Serial.println();
-  Serial.print("Connecting to ");
-  Serial.println(config.wifiSsid);
-
-  WiFi.mode(WIFI_STA);
-  WiFi.persistent(false);
-  WiFi.begin(config.wifiSsid, config.wifiPass);
-}
-
-void setup()
+String macToStr(const uint8_t *mac)
 {
-  Serial.begin(115200);
-  EEPROM.begin(EEPROM_MAX_ADDRS);
-  pinMode(LED_BUILTIN, OUTPUT);
-//  pinMode(buttonPin, INPUT);
-  digitalWrite(LED_BUILTIN, HIGH);
-//  if(digitalRead(buttonPin) == HIGH) {
-//    Serial.println("Button pressed!!");
-//    Serial.println("clearing EEPROM...");
-//    clearEEPROM();
-//  }
-  state = PROG_INIT;
-}
-
-String macToStr(const uint8_t* mac) {
   String result;
   for (int i = 0; i < 6; ++i) {
     result += String(mac[i], 16);
-    if (i < 5)
+    if (i < 5) {
       result += ':';
+    }
   }
   return result;
 }
 
-bool config_mqtt()
+bool init_mqtt()
 {
   clientMQTT = PubSubClient(wclient, config.broker);
 
@@ -171,7 +250,8 @@ bool config_mqtt()
   return false;
 }
 
-void setupAccessPoint(void) {
+void setupAccessPoint(void)
+{
   Serial.println("setting wifi mode");
   WiFi.mode(WIFI_STA);
   Serial.println("disconnecting");
@@ -183,14 +263,13 @@ void setupAccessPoint(void) {
   Serial.println("scanning");
   int n = WiFi.scanNetworks();
   Serial.println("scan done");
-  if (n == 0)
+  if (n == 0) {
     Serial.println("no networks found");
-  else
-  {
+  }
+  else {
     Serial.print(n);
     Serial.println(" networks found");
-    for (int i = 0; i < n; ++i)
-    {
+    for (int i = 0; i < n; ++i) {
       // Print SSID and RSSI for each network found
       Serial.print(i + 1);
       Serial.print(": ");
@@ -204,8 +283,7 @@ void setupAccessPoint(void) {
   }
   Serial.println("");
   st = "<ol>";
-  for (int i = 0; i < n; ++i)
-  {
+  for (int i = 0; i < n; ++i) {
     // Print SSID and RSSI for each network found
     st += "<li>";
     st += WiFi.SSID(i);
@@ -223,7 +301,8 @@ void setupAccessPoint(void) {
   launchWeb(ACCESS_POINT_WEBSERVER);
 }
 
-void launchWeb(int webservertype) {
+void launchWeb(int webservertype)
+{
   Serial.println("\nWiFi connected");
   Serial.print("Local IP: ");
   Serial.println(WiFi.localIP());
@@ -239,15 +318,17 @@ void launchWeb(int webservertype) {
   dnsServer.start(DNS_PORT, "*", apIP);
 }
 
-void setupWebServerHandlers(int webservertype) {
-  if ( webservertype == ACCESS_POINT_WEBSERVER ) {
+void setupWebServerHandlers(int webservertype)
+{
+  if (webservertype == ACCESS_POINT_WEBSERVER) {
     server.on("/", handleDisplayAccessPoints);
     server.on("/setap", handleSetAccessPoint);
     server.onNotFound(handleNotFound);
   }
 }
 
-void handleDisplayAccessPoints() {
+void handleDisplayAccessPoints()
+{
   IPAddress ip = WiFi.softAPIP();
   String ipStr = String(ip[0]) + '.' + String(ip[1]) + '.' + String(ip[2]) + '.' + String(ip[3]);
   uint8_t mac[6];
@@ -271,7 +352,8 @@ void handleDisplayAccessPoints() {
   server.send(200, "text/html", content);
 }
 
-void handleSetAccessPoint() {
+void handleSetAccessPoint()
+{
   Serial.println("entered handleSetAccessPoint");
   int httpstatus = 200;
   config.confirmation = CONFIRMATION_NUMBER;
@@ -290,10 +372,7 @@ void handleSetAccessPoint() {
   Serial.println(config.mqttUser);
   Serial.println(config.mqttPassword);
   if (sizeof(config.wifiSsid) > 0 && sizeof(config.wifiPass) > 0) {
-    WiFi.mode(WIFI_AP_STA);
-    WiFi.persistent(false);
-    WiFi.begin(config.wifiSsid, config.wifiPass);
-    if (testWifi()) {
+    if (initWifi()) {
       Serial.println("\nWifi Connection Success!");
       if (sizeof(config.broker) > 0 && sizeof(config.topicHumidity) > 0) {
         //Serial.println("clearing EEPROM...");
@@ -301,24 +380,27 @@ void handleSetAccessPoint() {
         Serial.println("writting EEPROM...");
         EEPROMWriteAnything(0, config);
         EEPROM.commit();
-        Serial.println("Done! See you soon2");
+        Serial.println("Sucessfull configuration");
         digitalWrite(LED_BUILTIN, HIGH);
         delay(3000);
         server.stop();
         state = PROG_INIT;
-      } else {
+      }
+      else {
         content = "<!DOCTYPE HTML>\n<html>No broker or topic setted, please try again.</html>";
         Serial.println("Sending 404");
         httpstatus = 404;
       }
-    } else {
+    }
+    else {
       Serial.println("Could not connect to this wifi");
       content = "<!DOCTYPE HTML>\n<html>";
       content += "Failed to connect to AP ";
       content += config.wifiSsid;
       content += ", try again.</html>";
     }
-  } else {
+  }
+  else {
     Serial.println("SSID or password not set");
     content = "<!DOCTYPE HTML><html>";
     content += "Error, no ssid or password set?</html>";
@@ -328,7 +410,8 @@ void handleSetAccessPoint() {
   server.send(httpstatus, "text/html", content);
 }
 
-void handleNotFound() {
+void handleNotFound()
+{
   content = "File Not Found\n\n";
   content += "URI: ";
   content += server.uri();
@@ -343,60 +426,11 @@ void handleNotFound() {
   server.send(404, "text/plain", content);
 }
 
-void clearEEPROM() {
+void clearEEPROM()
+{
   for (int i = 0; i < EEPROM_MAX_ADDRS; i++) {
     EEPROM.write(i, 0);
   }
   EEPROM.commit();
   delay(100);
-}
-
-void loop()
-{
-  dnsServer.processNextRequest();
-  if (state == PROG_INIT) {
-    Serial.print("INIT");
-
-    //saveConfig(41, "iot.eclipse.org", "onionOut", "cebola", "cebola", "onion", "onion");
-    loadConfig();
-
-    setup_wifi();
-
-    if (testWifi()) {
-      Serial.println("Could connect WiFi");
-      state = PROG_MQTT;
-    } else {
-      Serial.println("Could NOT connect Wifi");
-      state = PROG_CONFIG;
-    }
-  }
-  else if (state == PROG_MQTT) {
-    if (config_mqtt()) {
-      state = PROG_RUN;
-    }
-    else {
-      state = PROG_CONFIG;
-    }
-  }
-  else if (state == PROG_CONFIG) {
-    Serial.println("Start web");
-
-    setupAccessPoint();
-    digitalWrite(LED_BUILTIN, LOW);
-    state = PROG_WAIT_WEB;
-    delay(5000);
-  }
-  else if (state == PROG_RUN) {
-    float h = analogRead(sensorPin);
-    String humidity = String(h, 1);
-    clientMQTT.loop();
-    humidity += "\045";
-    MQTT::Publish pub(humidTopic, humidity);
-    pub.set_retain(true);
-    clientMQTT.publish(pub);
-    Serial.println("Publish: ");
-    Serial.println(humidity);
-    ESP.deepSleep(sleepTimeS * 1000000);
-  }
-  server.handleClient();
 }
