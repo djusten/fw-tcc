@@ -18,17 +18,16 @@
 /********************************Includes********************************/
 
 #include "config.h"
-#include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include "DNSServer.h"
-#include <PubSubClient.h>
-#include <MQTT.h>
 #include "EEPROMAnything.h"
+#include "Adafruit_MQTT_Client.h"
 
 /********************************Defines********************************/
 
 #define EEPROM_MAX_ADDRS 512
 #define CONFIRMATION_NUMBER 42
+#define AIO_SERVERPORT  1883
 
 enum {
   ACCESS_POINT_WEBSERVER
@@ -39,15 +38,17 @@ enum {
   PROG_RUN,
   PROG_MQTT,
   PROG_WAIT_WEB,
-  PROG_CONFIG
+  PROG_CONFIG,
+  PROG_CHECK
 } prog_status;
 
 config_t config;
 
 ESP8266WebServer server(80);
 
-WiFiClient wclient;
-PubSubClient clientMQTT(wclient, config.broker);
+WiFiClient client;
+Adafruit_MQTT_Client mqtt(&client, config.broker, AIO_SERVERPORT, config.ioUser, config.ioKey);
+Adafruit_MQTT_Publish photocell = Adafruit_MQTT_Publish(&mqtt, config.topicHumidity);
 
 int state;
 String humidTopic;
@@ -57,8 +58,8 @@ IPAddress apIP(10, 10, 10, 1);
 DNSServer dnsServer;
 const byte DNS_PORT = 53;
 const char *ssid = "esp-config-mode";
-const int sleepTimeS = 5;
-//int buttonPin = 14;
+const int sleepTimeS = 30;
+int buttonPin = 5;
 int sensorPin = A0;
 
 /********************************Main********************************/
@@ -77,19 +78,20 @@ void loop()
   dnsServer.processNextRequest();
   if (state == PROG_CHECK) {
 
-    if(digitalRead(buttonPin) == HIGH) {
+    if (digitalRead(buttonPin) == HIGH) {
       Serial.println("Button pressed!!");
       Serial.println("clearing EEPROM...");
       clearEEPROM();
     }
+
     state = PROG_INIT;
   }
-  else if(state == PROG_INIT) {
+  else if (state == PROG_INIT) {
     Serial.print("INIT");
 
     loadConfig();
 
-    if (initWifi()) {
+    if (initWifi(WIFI_AP)) {
       Serial.println("Could connect WiFi");
       state = PROG_MQTT;
     }
@@ -114,15 +116,20 @@ void loop()
     state = PROG_WAIT_WEB;
   }
   else if (state == PROG_RUN) {
-    float h = analogRead(sensorPin);
-    String humidity = String(h, 1);
-    clientMQTT.loop();
-    humidity += "\045";
-    MQTT::Publish pub(humidTopic, humidity);
-    pub.set_retain(true);
-    clientMQTT.publish(pub);
+    float humidity = analogRead(sensorPin);
+
     Serial.println("Publish: ");
     Serial.println(humidity);
+
+    int x = 12;
+    if (! photocell.publish(humidity)) {
+    //if (! photocell.publish(x)) {
+      Serial.println(F("Failed"));
+    }
+    else {
+      Serial.println(F("OK!"));
+    }
+
     ESP.deepSleep(sleepTimeS * 1000000);
   }
   server.handleClient();
@@ -130,28 +137,26 @@ void loop()
 
 /********************************Init********************************/
 
-void initPins() {
+void initPins()
+{
   pinMode(LED_BUILTIN, OUTPUT);
-//  pinMode(buttonPin, INPUT);
+  pinMode(buttonPin, INPUT);
   digitalWrite(LED_BUILTIN, HIGH);
 }
 
-void initSerial() {
+void initSerial()
+{
   Serial.begin(115200);
   delay(10);
 }
 
-void initEeprom() {
+void initEeprom()
+{
   EEPROM.begin(EEPROM_MAX_ADDRS);
   delay(10);
 }
 
-void initPins() {
-  pinMode(rele01, OUTPUT);
-  digitalWrite(rele01, HIGH);
-}
-
-bool initWifi(void)
+bool initWifi(WiFiMode_t mode)
 {
   int c = 0;
 
@@ -159,7 +164,7 @@ bool initWifi(void)
   Serial.print("Connecting to ");
   Serial.println(config.wifiSsid);
 
-  WiFi.mode(WIFI_STA);
+  WiFi.mode(mode);
   WiFi.persistent(false);
   WiFi.begin(config.wifiSsid, config.wifiPass);
 
@@ -185,15 +190,15 @@ bool initWifi(void)
 /********************************Config********************************/
 
 bool saveConfig(int confirmation, char *broker, char *topicHumidity,
-                char *wifiSsid, char *wifiPass, char *mqttUser, char *mqttPassword)
+                char *wifiSsid, char *wifiPass, char *ioUser, char *ioKey)
 {
   config.confirmation = confirmation;
   strncpy(config.broker, broker, sizeof(config.broker));
   strncpy(config.topicHumidity, topicHumidity, sizeof(config.topicHumidity));
   strncpy(config.wifiSsid, wifiSsid, sizeof(config.wifiSsid));
   strncpy(config.wifiPass, wifiPass, sizeof(config.wifiPass));
-  strncpy(config.mqttUser, mqttUser, sizeof(config.mqttUser));
-  strncpy(config.mqttPassword, mqttPassword, sizeof(config.mqttPassword));
+  strncpy(config.ioUser, ioUser, sizeof(config.ioUser));
+  strncpy(config.ioKey, ioKey, sizeof(config.ioKey));
   EEPROMWriteAnything(0, config);
 
   return true;
@@ -213,10 +218,10 @@ bool loadConfig(void)
   Serial.println(config.wifiSsid);
   Serial.print("wifiPass is: ");
   Serial.println(config.wifiPass);
-  Serial.print("mqttUser is: ");
-  Serial.println(config.mqttUser);
-  Serial.print("mqttPass is: ");
-  Serial.println(config.mqttPassword);
+  Serial.print("ioUser is: ");
+  Serial.println(config.ioUser);
+  Serial.print("ioPass is: ");
+  Serial.println(config.ioKey);
 
   return true;
 }
@@ -248,18 +253,27 @@ String macToStr(const uint8_t *mac)
 
 bool init_mqtt()
 {
-  clientMQTT = PubSubClient(wclient, config.broker);
+  int8_t ret;
+  int8_t c = 0;
 
-  uint8_t mac[6];
-  WiFi.macAddress(mac);
-  String clientID = "esp_" + macToStr(mac);
-
-  if (clientMQTT.connect(MQTT::Connect(clientID).set_auth(config.mqttUser, config.mqttPassword))) {
-    Serial.println("connected to MQTT broker!");
-    humidTopic = String(config.topicHumidity);
+  if (mqtt.connected()) {
     return true;
   }
-  Serial.println("NOT connected to MQTT broker!");
+
+  Serial.print("Connecting to MQTT... ");
+  while (c < 20) {
+    if ((ret = mqtt.connect()) == 0) {
+      Serial.println("MQTT Connected!");
+      return true;
+    }
+
+    delay(500);
+    Serial.print(".");
+    c++;
+  }
+
+  Serial.println(mqtt.connectErrorString(ret));
+
   return false;
 }
 
@@ -349,7 +363,9 @@ void handleDisplayAccessPoints()
   uint8_t mac[6];
   WiFi.macAddress(mac);
   String macStr = macToStr(mac);
-  content = "<!DOCTYPE HTML>\n<html>Hello from ";
+  content = "<!DOCTYPE HTML> \
+              <html> \
+                Hello from ";
   content += ssid;
   content += " at ";
   content += ipStr;
@@ -357,41 +373,49 @@ void handleDisplayAccessPoints()
   content += macStr;
   content += ")<p>";
   content += st;
-  content += "<p><form method='get' action='setap'>";
-  content += "<label>SSID: </label><input name='ssid' length=32><label>Password: </label><input type='password' name='pass' length=64>";
-  content += "<p><label>MQTT Broker URL or IP: </label><input name='broker'><p><label>MQTT Humidity Topic: </label><input name='topicHumidity' placeholder='home/bedroom/humidity'><p><label>MQTT User: </label><input name='user'><p><label>MQTT Password: </label><input type='password' name='mqttpass'>";
-  content += "<p><input type='submit'></form>";
-  content += "<p>We will attempt to connect to the selected AP and broker and reset if successful.";
-  content += "<p>Wait a bit and try to subscribe to the selected topic";
-  content += "</html>";
+  content += "<p> \
+                <form method='get' action='setap'> \
+                  <hr> \
+                  <p><label>SSID: </label><input name='ssid' length=32><label>Password: </label><input type='password' name='pass' length=64><p> \
+                  <hr> \
+                  <p><label>MQTT Broker URL or IP: </label><input name='broker'> \
+                  <p><label>MQTT Humidity Topic: </label><input name='topicHumidity'> \
+                  <hr>\
+                  <p><label>IO User: </label><input name='iouser'> \
+                  <p><label>IO Key: </label><input name='iokey' size='35'> \
+                  <p><input type='submit'> <input type='reset'> \
+                </form>\
+              </html>";
+
   server.send(200, "text/html", content);
 }
 
 void handleSetAccessPoint()
 {
+  char tmp[DEVICE_CONF_ARRAY_LENGHT];
   Serial.println("entered handleSetAccessPoint");
   int httpstatus = 200;
   config.confirmation = CONFIRMATION_NUMBER;
   server.arg("ssid").toCharArray(config.wifiSsid, DEVICE_CONF_ARRAY_LENGHT);
   server.arg("pass").toCharArray(config.wifiPass, DEVICE_CONF_ARRAY_LENGHT);
   server.arg("broker").toCharArray(config.broker, DEVICE_CONF_ARRAY_LENGHT);
-  server.arg("topicHumidity").toCharArray(config.topicHumidity, DEVICE_CONF_ARRAY_LENGHT);
-  server.arg("user").toCharArray(config.mqttUser, DEVICE_CONF_ARRAY_LENGHT);
-  server.arg("mqttpass").toCharArray(config.mqttPassword, DEVICE_CONF_ARRAY_LENGHT);
+  server.arg("topicHumidity").toCharArray(tmp, DEVICE_CONF_ARRAY_LENGHT);
+  server.arg("iouser").toCharArray(config.ioUser, DEVICE_CONF_ARRAY_LENGHT);
+  server.arg("iokey").toCharArray(config.ioKey, DEVICE_CONF_ARRAY_LENGHT);
+
 
   Serial.println(config.confirmation);
   Serial.println(config.wifiSsid);
   Serial.println(config.wifiPass);
   Serial.println(config.broker);
   Serial.println(config.topicHumidity);
-  Serial.println(config.mqttUser);
-  Serial.println(config.mqttPassword);
+  Serial.println(config.ioUser);
+  Serial.println(config.ioKey);
   if (sizeof(config.wifiSsid) > 0 && sizeof(config.wifiPass) > 0) {
-    if (initWifi()) {
+    if (initWifi(WIFI_AP_STA)) {
       Serial.println("\nWifi Connection Success!");
       if (sizeof(config.broker) > 0 && sizeof(config.topicHumidity) > 0) {
-        //Serial.println("clearing EEPROM...");
-        //clearEEPROM();
+        snprintf(config.topicHumidity, strlen(config.topicHumidity), "%s/feeds/%s", config.ioUser, tmp);
         Serial.println("writting EEPROM...");
         EEPROMWriteAnything(0, config);
         EEPROM.commit();
@@ -400,9 +424,10 @@ void handleSetAccessPoint()
         delay(3000);
         server.stop();
         state = PROG_INIT;
+        content = "<!DOCTYPE HTML>\n<html>Configuration OK</html>";
       }
       else {
-        content = "<!DOCTYPE HTML>\n<html>No broker or topic setted, please try again.</html>";
+        content = "<!DOCTYPE HTML>\n<html>No broker, topic, user or key setted, please try again.</html>";
         Serial.println("Sending 404");
         httpstatus = 404;
       }
@@ -419,7 +444,6 @@ void handleSetAccessPoint()
     Serial.println("SSID or password not set");
     content = "<!DOCTYPE HTML><html>";
     content += "Error, no ssid or password set?</html>";
-    //.println("Sending 404");
     httpstatus = 404;
   }
   server.send(httpstatus, "text/html", content);
