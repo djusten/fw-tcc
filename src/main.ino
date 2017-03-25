@@ -28,6 +28,9 @@
 #define EEPROM_MAX_ADDRS 512
 #define CONFIRMATION_NUMBER 42
 #define AIO_SERVERPORT  1883
+#define WEBSERVER_PORT 80
+
+/********************************Typedef********************************/
 
 enum {
   ACCESS_POINT_WEBSERVER
@@ -42,16 +45,16 @@ enum {
   PROG_CHECK
 } prog_status;
 
-config_t config;
+/*******************************Variables********************************/
 
-ESP8266WebServer server(80);
+config_t config;
 
 WiFiClient client;
 Adafruit_MQTT_Client mqtt(&client, config.broker, AIO_SERVERPORT, config.ioUser, config.ioKey);
 Adafruit_MQTT_Publish photocell = Adafruit_MQTT_Publish(&mqtt, config.topicHumidity);
+ESP8266WebServer server(WEBSERVER_PORT);
 
 int state;
-String humidTopic;
 String st;
 String content;
 IPAddress apIP(10, 10, 10, 1);
@@ -121,9 +124,7 @@ void loop()
     Serial.println("Publish: ");
     Serial.println(humidity);
 
-    int x = 12;
     if (! photocell.publish(humidity)) {
-    //if (! photocell.publish(x)) {
       Serial.println(F("Failed"));
     }
     else {
@@ -363,9 +364,9 @@ void handleDisplayAccessPoints()
   uint8_t mac[6];
   WiFi.macAddress(mac);
   String macStr = macToStr(mac);
-  content = "<!DOCTYPE HTML> \
-              <html> \
-                Hello from ";
+  content = "<!DOCTYPE HTML>" \
+              "<html>" \
+                "Hello from ";
   content += ssid;
   content += " at ";
   content += ipStr;
@@ -373,19 +374,19 @@ void handleDisplayAccessPoints()
   content += macStr;
   content += ")<p>";
   content += st;
-  content += "<p> \
-                <form method='get' action='setap'> \
-                  <hr> \
-                  <p><label>SSID: </label><input name='ssid' length=32><label>Password: </label><input type='password' name='pass' length=64><p> \
-                  <hr> \
-                  <p><label>MQTT Broker URL or IP: </label><input name='broker'> \
-                  <p><label>MQTT Humidity Topic: </label><input name='topicHumidity'> \
-                  <hr>\
-                  <p><label>IO User: </label><input name='iouser'> \
-                  <p><label>IO Key: </label><input name='iokey' size='35'> \
-                  <p><input type='submit'> <input type='reset'> \
-                </form>\
-              </html>";
+  content += "<p>" \
+                "<form method='get' action='setap'>" \
+                  "<hr>" \
+                  "<p><label>SSID: </label><input name='ssid' length=32><label>Password: </label><input type='password' name='pass' length=64><p>" \
+                  "<hr>" \
+                  "<p><label>MQTT Broker URL or IP: </label><input name='broker'>" \
+                  "<p><label>MQTT Humidity Topic: </label><input name='topicHumidity'>" \
+                  "<hr>" \
+                  "<p><label>IO User: </label><input name='iouser'>" \
+                  "<p><label>IO Key: </label><input name='iokey' size='35'>" \
+                  "<p><input type='submit'> <input type='reset'>" \
+                "</form>" \
+              "</html>";
 
   server.send(200, "text/html", content);
 }
