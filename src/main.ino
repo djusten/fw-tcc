@@ -81,7 +81,7 @@ void loop()
   dnsServer.processNextRequest();
   if (state == PROG_CHECK) {
 
-    if (digitalRead(buttonPin) == HIGH) {
+    if (digitalRead(buttonPin) == LOW) {
       Serial.println("Button pressed!!");
       Serial.println("clearing EEPROM...");
       clearEEPROM();
