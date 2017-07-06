@@ -29,6 +29,10 @@
 #define CONFIRMATION_NUMBER 42
 #define AIO_SERVERPORT  1883
 #define WEBSERVER_PORT 80
+#define SENSOR_MAX 782
+#define SENSOR_MIN 303
+#define SENSOR_CORRECTION (SENSOR_MAX - SENSOR_MIN)
+#define SENSOR_AVG 5
 
 /********************************Typedef********************************/
 
@@ -46,6 +50,8 @@ enum {
 } prog_status;
 
 /*******************************Variables********************************/
+
+//ADC_MODE(ADC_VCC);
 
 config_t config;
 
@@ -119,19 +125,36 @@ void loop()
     state = PROG_WAIT_WEB;
   }
   else if (state == PROG_RUN) {
-    float humidity = analogRead(sensorPin);
 
+    int i;
+    int humidity = 0;
+    for (i = 0; i < SENSOR_AVG; i++) {
+      humidity += analogRead(sensorPin);
+    }
+    //float vcc = ESP.getVcc() / 1024.0;
+
+    humidity = humidity / SENSOR_AVG;
     Serial.println("Publish: ");
     Serial.println(humidity);
+    photocell.publish((unsigned int)humidity);
+    humidity -= SENSOR_MIN;
+    Serial.println(humidity);
 
-    if (! photocell.publish(humidity)) {
+    //float humidity_percent = 100 * ((SENSOR_CORRECTION-(float)humidity) / SENSOR_CORRECTION);
+    float humidity_percent = 100 * ((SENSOR_CORRECTION-(float)humidity) / SENSOR_CORRECTION);
+    Serial.print("[Umidade Percentual] ");
+    Serial.print(humidity_percent);
+    Serial.println("%");
+
+    if (! photocell.publish((unsigned int)humidity_percent)) {
       Serial.println(F("Failed"));
     }
     else {
       Serial.println(F("OK!"));
     }
 
-    ESP.deepSleep(sleepTimeS * 1000000);
+//    ESP.deepSleep(sleepTimeS * 1000000);
+  delay(5000);
   }
   server.handleClient();
 }
