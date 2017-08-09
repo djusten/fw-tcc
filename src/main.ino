@@ -26,13 +26,13 @@
 /********************************Defines********************************/
 
 #define EEPROM_MAX_ADDRS 512
-#define CONFIRMATION_NUMBER 42
 #define AIO_SERVERPORT  1883
 #define WEBSERVER_PORT 80
-#define SENSOR_MAX 782
-#define SENSOR_MIN 303
+#define SENSOR_MAX 807
+#define SENSOR_MIN 370
 #define SENSOR_CORRECTION (SENSOR_MAX - SENSOR_MIN)
 #define SENSOR_AVG 5
+#define WIFI_TIMEOUT 20
 
 /********************************Typedef********************************/
 
@@ -46,7 +46,8 @@ enum {
   PROG_MQTT,
   PROG_WAIT_WEB,
   PROG_CONFIG,
-  PROG_CHECK
+  PROG_CHECK,
+  PROG_DONE
 } prog_status;
 
 /*******************************Variables********************************/
@@ -67,17 +68,19 @@ IPAddress apIP(10, 10, 10, 1);
 DNSServer dnsServer;
 const byte DNS_PORT = 53;
 const char *ssid = "esp-config-mode";
-const int sleepTimeS = 30;
+const int sleepTimeS = 1800;
 int buttonPin = 5;
 int sensorPin = A0;
+int powerPin = 12;
+int sensorPowerPin = 14;
 
 /********************************Main********************************/
 
 void setup()
 {
+  initPins();
   initSerial();
   initEeprom();
-  initPins();
 
   state = PROG_CHECK;
 }
@@ -91,22 +94,28 @@ void loop()
       Serial.println("Button pressed!!");
       Serial.println("clearing EEPROM...");
       clearEEPROM();
-    }
-
-    state = PROG_INIT;
-  }
-  else if (state == PROG_INIT) {
-    Serial.print("INIT");
-
-    loadConfig();
-
-    if (initWifi(WIFI_AP)) {
-      Serial.println("Could connect WiFi");
-      state = PROG_MQTT;
+      state = PROG_CONFIG;
+      //state = PROG_INIT;
     }
     else {
-      Serial.println("Could NOT connect Wifi");
+      state = PROG_INIT;
+    }
+  }
+  else if (state == PROG_INIT) {
+    Serial.println("INIT");
+
+    if (loadConfig() == false) {
       state = PROG_CONFIG;
+    }
+    else {
+      if (initWifi(WIFI_AP)) {
+        Serial.println("Could connect WiFi");
+        state = PROG_MQTT;
+      }
+      else {
+        Serial.println("Could NOT connect Wifi");
+        state = PROG_CONFIG;
+      }
     }
   }
   else if (state == PROG_MQTT) {
@@ -128,43 +137,72 @@ void loop()
 
     int i;
     int humidity = 0;
+
+    initSensor();
     for (i = 0; i < SENSOR_AVG; i++) {
       humidity += analogRead(sensorPin);
+      delay(10);
     }
-    //float vcc = ESP.getVcc() / 1024.0;
+//    float vcc = ESP.getVcc() / 1024.0;
 
     humidity = humidity / SENSOR_AVG;
     Serial.println("Publish: ");
     Serial.println(humidity);
-    photocell.publish((unsigned int)humidity);
+//    photocell.publish((unsigned int)humidity);
     humidity -= SENSOR_MIN;
     Serial.println(humidity);
 
-    //float humidity_percent = 100 * ((SENSOR_CORRECTION-(float)humidity) / SENSOR_CORRECTION);
     float humidity_percent = 100 * ((SENSOR_CORRECTION-(float)humidity) / SENSOR_CORRECTION);
-    Serial.print("[Umidade Percentual] ");
-    Serial.print(humidity_percent);
+    Serial.println("[Umidade Percentual] ");
+    Serial.println(humidity_percent);
     Serial.println("%");
 
-    if (! photocell.publish((unsigned int)humidity_percent)) {
+    if (humidity_percent < 0) {
+      humidity_percent = 0;
+    }
+    else if (humidity_percent > 100) {
+      humidity_percent = 100;
+    }
+
+    if (!photocell.publish((int)humidity_percent)) {
       Serial.println(F("Failed"));
     }
     else {
       Serial.println(F("OK!"));
     }
 
-//    ESP.deepSleep(sleepTimeS * 1000000);
-  delay(5000);
+    state = PROG_DONE;
+    //    delay(10);
+    //    ESP.deepSleep(sleepTimeS * 1000000, WAKE_RF_DEFAULT);
+    //  delay(5000);
+  }
+  else if (state == PROG_DONE) {
+    while (1) {
+      digitalWrite(powerPin, HIGH);
+      delay(1);
+      digitalWrite(powerPin, LOW);
+      delay(1);
+    }
+    digitalWrite(LED_BUILTIN, LOW);
   }
   server.handleClient();
 }
 
 /********************************Init********************************/
 
+void initSensor()
+{
+    digitalWrite(sensorPowerPin, HIGH);
+    delay(30);
+}
+
 void initPins()
 {
+  pinMode(powerPin, OUTPUT);
+  digitalWrite(powerPin, LOW);
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(buttonPin, INPUT);
+  pinMode(sensorPowerPin, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
 }
 
@@ -194,7 +232,7 @@ bool initWifi(WiFiMode_t mode)
 
   Serial.println("\nTesting WiFi...");
 
-  while (c < 20) {
+  while (c < (WIFI_TIMEOUT*2)) {
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println("");
       Serial.println("WiFi connected");
@@ -203,7 +241,7 @@ bool initWifi(WiFiMode_t mode)
       return true;
     }
     delay(500);
-    //Serial.print(WiFi.status());
+    //Serial.println(WiFi.status());
     Serial.print(".");
     c++;
   }
@@ -213,10 +251,9 @@ bool initWifi(WiFiMode_t mode)
 
 /********************************Config********************************/
 
-bool saveConfig(int confirmation, char *broker, char *topicHumidity,
+bool saveConfig(char *broker, char *topicHumidity,
                 char *wifiSsid, char *wifiPass, char *ioUser, char *ioKey)
 {
-  config.confirmation = confirmation;
   strncpy(config.broker, broker, sizeof(config.broker));
   strncpy(config.topicHumidity, topicHumidity, sizeof(config.topicHumidity));
   strncpy(config.wifiSsid, wifiSsid, sizeof(config.wifiSsid));
@@ -232,11 +269,14 @@ bool loadConfig(void)
 {
   EEPROMReadAnything(0, config);
 
-  Serial.print("Confirmation number is: ");
-  Serial.println(config.confirmation);
   Serial.print("Brokeris : ");
   Serial.println(config.broker);
-  Serial.print("topicHumidity is: ");
+
+  if (strlen(config.broker) == 0) {
+    return false;
+  }
+
+  Serial.println("topicHumidity is: ");
   Serial.println(config.topicHumidity);
   Serial.print("wifiSsid is: ");
   Serial.println(config.wifiSsid);
@@ -419,7 +459,6 @@ void handleSetAccessPoint()
   char tmp[DEVICE_CONF_ARRAY_LENGHT];
   Serial.println("entered handleSetAccessPoint");
   int httpstatus = 200;
-  config.confirmation = CONFIRMATION_NUMBER;
   server.arg("ssid").toCharArray(config.wifiSsid, DEVICE_CONF_ARRAY_LENGHT);
   server.arg("pass").toCharArray(config.wifiPass, DEVICE_CONF_ARRAY_LENGHT);
   server.arg("broker").toCharArray(config.broker, DEVICE_CONF_ARRAY_LENGHT);
@@ -428,7 +467,6 @@ void handleSetAccessPoint()
   server.arg("iokey").toCharArray(config.ioKey, DEVICE_CONF_ARRAY_LENGHT);
 
 
-  Serial.println(config.confirmation);
   Serial.println(config.wifiSsid);
   Serial.println(config.wifiPass);
   Serial.println(config.broker);
