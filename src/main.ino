@@ -57,8 +57,11 @@ enum {
 config_t config;
 
 WiFiClient client;
-Adafruit_MQTT_Client mqtt(&client, config.broker, AIO_SERVERPORT, config.ioUser, config.ioKey);
-Adafruit_MQTT_Publish photocell = Adafruit_MQTT_Publish(&mqtt, config.topicHumidity);
+//Adafruit_MQTT_Client mqtt(&client, config.broker, AIO_SERVERPORT, config.ioUser, config.ioKey);
+//Adafruit_MQTT_Client mqtt(&client, config.broker, config.brokerPort, config.ioUser, config.ioKey);
+//Adafruit_MQTT_Publish photocell = Adafruit_MQTT_Publish(&mqtt, config.topicHumidity);
+
+
 ESP8266WebServer server(WEBSERVER_PORT);
 
 int state;
@@ -73,6 +76,9 @@ int buttonPin = 5;
 int sensorPin = A0;
 int powerPin = 12;
 int sensorPowerPin = 14;
+
+Adafruit_MQTT_Client mqtt(&client, config.broker, config.brokerPort, config.ioUser, config.ioKey);
+Adafruit_MQTT_Publish photocell = Adafruit_MQTT_Publish(&mqtt, config.topicHumidity);
 
 /********************************Main********************************/
 
@@ -108,6 +114,8 @@ void loop()
       state = PROG_CONFIG;
     }
     else {
+
+
       if (initWifi(WIFI_AP)) {
         Serial.println("Could connect WiFi");
         state = PROG_MQTT;
@@ -251,10 +259,16 @@ bool initWifi(WiFiMode_t mode)
 
 /********************************Config********************************/
 
-bool saveConfig(char *broker, char *topicHumidity,
+bool saveConfig(char *broker, int brokerPort, char *topicHumidity,
                 char *wifiSsid, char *wifiPass, char *ioUser, char *ioKey)
 {
   strncpy(config.broker, broker, sizeof(config.broker));
+  if (brokerPort > 0) {
+    config.brokerPort = brokerPort;
+  }
+  else {
+    config.brokerPort = AIO_SERVERPORT;
+  }
   strncpy(config.topicHumidity, topicHumidity, sizeof(config.topicHumidity));
   strncpy(config.wifiSsid, wifiSsid, sizeof(config.wifiSsid));
   strncpy(config.wifiPass, wifiPass, sizeof(config.wifiPass));
@@ -275,6 +289,9 @@ bool loadConfig(void)
   if (strlen(config.broker) == 0) {
     return false;
   }
+
+  Serial.print("Port : ");
+  Serial.println(config.brokerPort);
 
   Serial.println("topicHumidity is: ");
   Serial.println(config.topicHumidity);
@@ -320,6 +337,7 @@ bool init_mqtt()
   int8_t ret;
   int8_t c = 0;
 
+  Adafruit_MQTT_Client mqtt(&client, config.broker, config.brokerPort, config.ioUser, config.ioKey);
   if (mqtt.connected()) {
     return true;
   }
@@ -380,10 +398,6 @@ void setupAccessPoint(void)
     // Print SSID and RSSI for each network found
     st += "<li>";
     st += WiFi.SSID(i);
-    st += " (";
-    st += WiFi.RSSI(i);
-    st += ")";
-    st += (WiFi.encryptionType(i) == ENC_TYPE_NONE) ? " " : "*";
     st += "</li>";
   }
   st += "</ol>";
@@ -428,26 +442,21 @@ void handleDisplayAccessPoints()
   WiFi.macAddress(mac);
   String macStr = macToStr(mac);
   content = "<!DOCTYPE HTML>" \
-              "<html>" \
-                "Hello from ";
-  content += ssid;
-  content += " at ";
-  content += ipStr;
-  content += " (";
-  content += macStr;
-  content += ")<p>";
+              "<html>";
+  content += "<p>";
+  content += "<h2>&nbsp;Configura&ccedil;&otilde;es Rede Wi-Fi</h2>";
   content += st;
+
   content += "<p>" \
                 "<form method='get' action='setap'>" \
+                  "<p><label>Rede: </label><input name='ssid' length=32><label>Senha: </label><input type='password' name='pass' length=64><p>" \
                   "<hr>" \
-                  "<p><label>SSID: </label><input name='ssid' length=32><label>Password: </label><input type='password' name='pass' length=64><p>" \
-                  "<hr>" \
-                  "<p><label>MQTT Broker URL or IP: </label><input name='broker'>" \
-                  "<p><label>MQTT Humidity Topic: </label><input name='topicHumidity'>" \
-                  "<hr>" \
-                  "<p><label>IO User: </label><input name='iouser'>" \
-                  "<p><label>IO Key: </label><input name='iokey' size='35'>" \
-                  "<p><input type='submit'> <input type='reset'>" \
+                  "<h2>Configura&ccedil;&otilde;es Servidor IoT (Broker)</h2>" \
+                  "<p>&nbsp;<label>Nome da Planta: &nbsp; &nbsp; &nbsp; &nbsp;</label><input name=\"topicHumidity\" type=\"text\" /></p>" \
+                  "<p><label>Endere&ccedil;o do Servidor: </label><input name=\"broker\" type=\"text\" /> <label>Porta:</label><input name=\"brokerPort\" value=\"1883\" style=\"width: 50px;\" min=\"1\" max=\"9999\" type=\"number\" /></p> " \
+                  "<p><label>Nome do Usu&aacute;rio: &nbsp; &nbsp; &nbsp;&nbsp;</label><input name=\"iouser\" type=\"text\" /></p>" \
+                  "<p><label>Chave do Usu&aacute;rio: &nbsp; &nbsp; &nbsp;&nbsp;</label><input name=\"iokey\" size=\"35\" type=\"text\" /></p>" \
+                  "<p><input type='submit' value=\"Enviar\"> <input type='reset' value=\"Limpar\">" \
                 "</form>" \
               "</html>";
 
@@ -462,6 +471,8 @@ void handleSetAccessPoint()
   server.arg("ssid").toCharArray(config.wifiSsid, DEVICE_CONF_ARRAY_LENGHT);
   server.arg("pass").toCharArray(config.wifiPass, DEVICE_CONF_ARRAY_LENGHT);
   server.arg("broker").toCharArray(config.broker, DEVICE_CONF_ARRAY_LENGHT);
+//  server.arg("brokerPort").toCharArray(config.brokerPort, DEVICE_CONF_ARRAY_LENGHT);
+  config.brokerPort = server.arg("brokerPort").toInt();
   server.arg("topicHumidity").toCharArray(tmp, DEVICE_CONF_ARRAY_LENGHT);
   server.arg("iouser").toCharArray(config.ioUser, DEVICE_CONF_ARRAY_LENGHT);
   server.arg("iokey").toCharArray(config.ioKey, DEVICE_CONF_ARRAY_LENGHT);
@@ -470,7 +481,9 @@ void handleSetAccessPoint()
   Serial.println(config.wifiSsid);
   Serial.println(config.wifiPass);
   Serial.println(config.broker);
+  Serial.println(config.brokerPort);
   Serial.println(config.topicHumidity);
+  Serial.println(tmp);
   Serial.println(config.ioUser);
   Serial.println(config.ioKey);
   if (sizeof(config.wifiSsid) > 0 && sizeof(config.wifiPass) > 0) {
@@ -479,6 +492,7 @@ void handleSetAccessPoint()
       if (sizeof(config.broker) > 0 && sizeof(config.topicHumidity) > 0) {
         snprintf(config.topicHumidity, strlen(config.topicHumidity), "%s/feeds/%s", config.ioUser, tmp);
         Serial.println("writting EEPROM...");
+        Serial.println(config.topicHumidity);
         EEPROMWriteAnything(0, config);
         EEPROM.commit();
         Serial.println("Sucessfull configuration");
