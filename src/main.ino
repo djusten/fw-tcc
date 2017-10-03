@@ -26,9 +26,13 @@
 /********************************Defines********************************/
 
 #define EEPROM_MAX_ADDRS 512
-#define CONFIRMATION_NUMBER 42
 #define AIO_SERVERPORT  1883
 #define WEBSERVER_PORT 80
+#define SENSOR_MAX 807
+#define SENSOR_MIN 370
+#define SENSOR_CORRECTION (SENSOR_MAX - SENSOR_MIN)
+#define SENSOR_AVG 5
+#define WIFI_TIMEOUT 20
 
 /********************************Typedef********************************/
 
@@ -42,16 +46,22 @@ enum {
   PROG_MQTT,
   PROG_WAIT_WEB,
   PROG_CONFIG,
-  PROG_CHECK
+  PROG_CHECK,
+  PROG_DONE
 } prog_status;
 
 /*******************************Variables********************************/
 
+//ADC_MODE(ADC_VCC);
+
 config_t config;
 
 WiFiClient client;
-Adafruit_MQTT_Client mqtt(&client, config.broker, AIO_SERVERPORT, config.ioUser, config.ioKey);
-Adafruit_MQTT_Publish photocell = Adafruit_MQTT_Publish(&mqtt, config.topicHumidity);
+//Adafruit_MQTT_Client mqtt(&client, config.broker, AIO_SERVERPORT, config.ioUser, config.ioKey);
+//Adafruit_MQTT_Client mqtt(&client, config.broker, config.brokerPort, config.ioUser, config.ioKey);
+//Adafruit_MQTT_Publish photocell = Adafruit_MQTT_Publish(&mqtt, config.topicHumidity);
+
+
 ESP8266WebServer server(WEBSERVER_PORT);
 
 int state;
@@ -61,17 +71,22 @@ IPAddress apIP(10, 10, 10, 1);
 DNSServer dnsServer;
 const byte DNS_PORT = 53;
 const char *ssid = "esp-config-mode";
-const int sleepTimeS = 30;
+const int sleepTimeS = 1800;
 int buttonPin = 5;
 int sensorPin = A0;
+int powerPin = 12;
+int sensorPowerPin = 14;
+
+Adafruit_MQTT_Client mqtt(&client, config.broker, config.brokerPort, config.ioUser, config.ioKey);
+Adafruit_MQTT_Publish photocell = Adafruit_MQTT_Publish(&mqtt, config.topicHumidity);
 
 /********************************Main********************************/
 
 void setup()
 {
+  initPins();
   initSerial();
   initEeprom();
-  initPins();
 
   state = PROG_CHECK;
 }
@@ -85,22 +100,30 @@ void loop()
       Serial.println("Button pressed!!");
       Serial.println("clearing EEPROM...");
       clearEEPROM();
-    }
-
-    state = PROG_INIT;
-  }
-  else if (state == PROG_INIT) {
-    Serial.print("INIT");
-
-    loadConfig();
-
-    if (initWifi(WIFI_AP)) {
-      Serial.println("Could connect WiFi");
-      state = PROG_MQTT;
+      state = PROG_CONFIG;
+      //state = PROG_INIT;
     }
     else {
-      Serial.println("Could NOT connect Wifi");
+      state = PROG_INIT;
+    }
+  }
+  else if (state == PROG_INIT) {
+    Serial.println("INIT");
+
+    if (loadConfig() == false) {
       state = PROG_CONFIG;
+    }
+    else {
+
+
+      if (initWifi(WIFI_AP)) {
+        Serial.println("Could connect WiFi");
+        state = PROG_MQTT;
+      }
+      else {
+        Serial.println("Could NOT connect Wifi");
+        state = PROG_CONFIG;
+      }
     }
   }
   else if (state == PROG_MQTT) {
@@ -119,29 +142,75 @@ void loop()
     state = PROG_WAIT_WEB;
   }
   else if (state == PROG_RUN) {
-    float humidity = analogRead(sensorPin);
 
+    int i;
+    int humidity = 0;
+
+    initSensor();
+    for (i = 0; i < SENSOR_AVG; i++) {
+      humidity += analogRead(sensorPin);
+      delay(10);
+    }
+//    float vcc = ESP.getVcc() / 1024.0;
+
+    humidity = humidity / SENSOR_AVG;
     Serial.println("Publish: ");
     Serial.println(humidity);
+//    photocell.publish((unsigned int)humidity);
+    humidity -= SENSOR_MIN;
+    Serial.println(humidity);
 
-    if (! photocell.publish(humidity)) {
+    float humidity_percent = 100 * ((SENSOR_CORRECTION-(float)humidity) / SENSOR_CORRECTION);
+    Serial.println("[Umidade Percentual] ");
+    Serial.println(humidity_percent);
+    Serial.println("%");
+
+    if (humidity_percent < 0) {
+      humidity_percent = 0;
+    }
+    else if (humidity_percent > 100) {
+      humidity_percent = 100;
+    }
+
+    if (!photocell.publish((int)humidity_percent)) {
       Serial.println(F("Failed"));
     }
     else {
       Serial.println(F("OK!"));
     }
 
-    ESP.deepSleep(sleepTimeS * 1000000);
+    state = PROG_DONE;
+    //    delay(10);
+    //    ESP.deepSleep(sleepTimeS * 1000000, WAKE_RF_DEFAULT);
+    //  delay(5000);
+  }
+  else if (state == PROG_DONE) {
+    while (1) {
+      digitalWrite(powerPin, HIGH);
+      delay(1);
+      digitalWrite(powerPin, LOW);
+      delay(1);
+    }
+    digitalWrite(LED_BUILTIN, LOW);
   }
   server.handleClient();
 }
 
 /********************************Init********************************/
 
+void initSensor()
+{
+    digitalWrite(sensorPowerPin, HIGH);
+    delay(30);
+}
+
 void initPins()
 {
+  pinMode(powerPin, OUTPUT);
+  digitalWrite(powerPin, LOW);
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(buttonPin, INPUT);
+  pinMode(sensorPowerPin, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
 }
 
@@ -171,7 +240,7 @@ bool initWifi(WiFiMode_t mode)
 
   Serial.println("\nTesting WiFi...");
 
-  while (c < 20) {
+  while (c < (WIFI_TIMEOUT*2)) {
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println("");
       Serial.println("WiFi connected");
@@ -180,7 +249,7 @@ bool initWifi(WiFiMode_t mode)
       return true;
     }
     delay(500);
-    //Serial.print(WiFi.status());
+    //Serial.println(WiFi.status());
     Serial.print(".");
     c++;
   }
@@ -190,11 +259,16 @@ bool initWifi(WiFiMode_t mode)
 
 /********************************Config********************************/
 
-bool saveConfig(int confirmation, char *broker, char *topicHumidity,
+bool saveConfig(char *broker, int brokerPort, char *topicHumidity,
                 char *wifiSsid, char *wifiPass, char *ioUser, char *ioKey)
 {
-  config.confirmation = confirmation;
   strncpy(config.broker, broker, sizeof(config.broker));
+  if (brokerPort > 0) {
+    config.brokerPort = brokerPort;
+  }
+  else {
+    config.brokerPort = AIO_SERVERPORT;
+  }
   strncpy(config.topicHumidity, topicHumidity, sizeof(config.topicHumidity));
   strncpy(config.wifiSsid, wifiSsid, sizeof(config.wifiSsid));
   strncpy(config.wifiPass, wifiPass, sizeof(config.wifiPass));
@@ -209,11 +283,17 @@ bool loadConfig(void)
 {
   EEPROMReadAnything(0, config);
 
-  Serial.print("Confirmation number is: ");
-  Serial.println(config.confirmation);
   Serial.print("Brokeris : ");
   Serial.println(config.broker);
-  Serial.print("topicHumidity is: ");
+
+  if (strlen(config.broker) == 0) {
+    return false;
+  }
+
+  Serial.print("Port : ");
+  Serial.println(config.brokerPort);
+
+  Serial.println("topicHumidity is: ");
   Serial.println(config.topicHumidity);
   Serial.print("wifiSsid is: ");
   Serial.println(config.wifiSsid);
@@ -257,6 +337,7 @@ bool init_mqtt()
   int8_t ret;
   int8_t c = 0;
 
+  Adafruit_MQTT_Client mqtt(&client, config.broker, config.brokerPort, config.ioUser, config.ioKey);
   if (mqtt.connected()) {
     return true;
   }
@@ -317,10 +398,6 @@ void setupAccessPoint(void)
     // Print SSID and RSSI for each network found
     st += "<li>";
     st += WiFi.SSID(i);
-    st += " (";
-    st += WiFi.RSSI(i);
-    st += ")";
-    st += (WiFi.encryptionType(i) == ENC_TYPE_NONE) ? " " : "*";
     st += "</li>";
   }
   st += "</ol>";
@@ -365,26 +442,21 @@ void handleDisplayAccessPoints()
   WiFi.macAddress(mac);
   String macStr = macToStr(mac);
   content = "<!DOCTYPE HTML>" \
-              "<html>" \
-                "Hello from ";
-  content += ssid;
-  content += " at ";
-  content += ipStr;
-  content += " (";
-  content += macStr;
-  content += ")<p>";
+              "<html>";
+  content += "<p>";
+  content += "<h2>&nbsp;Configura&ccedil;&otilde;es Rede Wi-Fi</h2>";
   content += st;
+
   content += "<p>" \
                 "<form method='get' action='setap'>" \
+                  "<p><label>Rede: </label><input name='ssid' length=32><label>Senha: </label><input type='password' name='pass' length=64><p>" \
                   "<hr>" \
-                  "<p><label>SSID: </label><input name='ssid' length=32><label>Password: </label><input type='password' name='pass' length=64><p>" \
-                  "<hr>" \
-                  "<p><label>MQTT Broker URL or IP: </label><input name='broker'>" \
-                  "<p><label>MQTT Humidity Topic: </label><input name='topicHumidity'>" \
-                  "<hr>" \
-                  "<p><label>IO User: </label><input name='iouser'>" \
-                  "<p><label>IO Key: </label><input name='iokey' size='35'>" \
-                  "<p><input type='submit'> <input type='reset'>" \
+                  "<h2>Configura&ccedil;&otilde;es Servidor IoT (Broker)</h2>" \
+                  "<p>&nbsp;<label>Nome da Planta: &nbsp; &nbsp; &nbsp; &nbsp;</label><input name=\"topicHumidity\" type=\"text\" /></p>" \
+                  "<p><label>Endere&ccedil;o do Servidor: </label><input name=\"broker\" type=\"text\" /> <label>Porta:</label><input name=\"brokerPort\" value=\"1883\" style=\"width: 50px;\" min=\"1\" max=\"9999\" type=\"number\" /></p> " \
+                  "<p><label>Nome do Usu&aacute;rio: &nbsp; &nbsp; &nbsp;&nbsp;</label><input name=\"iouser\" type=\"text\" /></p>" \
+                  "<p><label>Chave do Usu&aacute;rio: &nbsp; &nbsp; &nbsp;&nbsp;</label><input name=\"iokey\" size=\"35\" type=\"text\" /></p>" \
+                  "<p><input type='submit' value=\"Enviar\"> <input type='reset' value=\"Limpar\">" \
                 "</form>" \
               "</html>";
 
@@ -396,20 +468,22 @@ void handleSetAccessPoint()
   char tmp[DEVICE_CONF_ARRAY_LENGHT];
   Serial.println("entered handleSetAccessPoint");
   int httpstatus = 200;
-  config.confirmation = CONFIRMATION_NUMBER;
   server.arg("ssid").toCharArray(config.wifiSsid, DEVICE_CONF_ARRAY_LENGHT);
   server.arg("pass").toCharArray(config.wifiPass, DEVICE_CONF_ARRAY_LENGHT);
   server.arg("broker").toCharArray(config.broker, DEVICE_CONF_ARRAY_LENGHT);
+//  server.arg("brokerPort").toCharArray(config.brokerPort, DEVICE_CONF_ARRAY_LENGHT);
+  config.brokerPort = server.arg("brokerPort").toInt();
   server.arg("topicHumidity").toCharArray(tmp, DEVICE_CONF_ARRAY_LENGHT);
   server.arg("iouser").toCharArray(config.ioUser, DEVICE_CONF_ARRAY_LENGHT);
   server.arg("iokey").toCharArray(config.ioKey, DEVICE_CONF_ARRAY_LENGHT);
 
 
-  Serial.println(config.confirmation);
   Serial.println(config.wifiSsid);
   Serial.println(config.wifiPass);
   Serial.println(config.broker);
+  Serial.println(config.brokerPort);
   Serial.println(config.topicHumidity);
+  Serial.println(tmp);
   Serial.println(config.ioUser);
   Serial.println(config.ioKey);
   if (sizeof(config.wifiSsid) > 0 && sizeof(config.wifiPass) > 0) {
@@ -418,6 +492,7 @@ void handleSetAccessPoint()
       if (sizeof(config.broker) > 0 && sizeof(config.topicHumidity) > 0) {
         snprintf(config.topicHumidity, strlen(config.topicHumidity), "%s/feeds/%s", config.ioUser, tmp);
         Serial.println("writting EEPROM...");
+        Serial.println(config.topicHumidity);
         EEPROMWriteAnything(0, config);
         EEPROM.commit();
         Serial.println("Sucessfull configuration");
